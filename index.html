@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Blood Pressure Tracker</title>
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/date-fns/2.29.3/date-fns.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/simple-statistics/7.8.3/simple-statistics.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200">
+    <div id="app" class="container mx-auto px-4 py-8">
+        <h1 class="text-3xl font-bold mb-8">Advanced Blood Pressure Tracker</h1>
+        <div id="inputForm" class="mb-8"></div>
+        <div id="statsDisplay" class="mb-8"></div>
+        <div id="charts" class="mb-8">
+            <div id="trendChart" class="mb-4 bg-white p-4 rounded shadow"></div>
+            <div id="distributionChart" class="mb-4 bg-white p-4 rounded shadow"></div>
+            <div id="timeInRangeChart" class="mb-4 bg-white p-4 rounded shadow"></div>
+            <div id="movingAverageChart" class="mb-4 bg-white p-4 rounded shadow"></div>
+            <div id="morningEveningDiffChart" class="mb-4 bg-white p-4 rounded shadow"></div>
+        </div>
+        <div id="readingsList"></div>
+    </div>
+
+    <script>
+    // App State
+    const state = {
+        readings: [],
+        charts: {},
+        medicationStartDate: null
+    };
+
+    // Utility Functions
+    const utils = {
+        saveToLocalStorage: () => {
+            localStorage.setItem('bpReadings', JSON.stringify(state.readings));
+            localStorage.setItem('medicationStartDate', state.medicationStartDate);
+        },
+        loadFromLocalStorage: () => {
+            const storedReadings = localStorage.getItem('bpReadings');
+            state.readings = storedReadings ? JSON.parse(storedReadings) : [];
+            state.medicationStartDate = localStorage.getItem('medicationStartDate');
+        },
+        calculateStats: (data) => {
+            if (data.length === 0) return {};
+            
+            const systolic = data.map(r => r.systolic);
+            const diastolic = data.map(r => r.diastolic);
+
+            const sysMedian = ss.median(systolic);
+            const diaMedian = ss.median(diastolic);
+
+            const sysSD = ss.standardDeviation(systolic);
+            const diaSD = ss.standardDeviation(diastolic);
+
+            const sysCV = (sysSD / ss.mean(systolic)) * 100;
+            const diaCV = (diaSD / ss.mean(diastolic)) * 100;
+
+            const timeInRange = utils.calculateTimeInRange(data);
+            const percentileNinety = ss.quantile(systolic, 0.9);
+
+            return {
+                systolicMean: ss.mean(systolic).toFixed(1),
+                diastolicMean: ss.mean(diastolic).toFixed(1),
+                systolicMedian: sysMedian.toFixed(1),
+                diastolicMedian: diaMedian.toFixed(1),
+                systolicSD: sysSD.toFixed(1),
+                diastolicSD: diaSD.toFixed(1),
+                systolicCV: sysCV.toFixed(1),
+                diastolicCV: diaCV.toFixed(1),
+                timeInRange: timeInRange.toFixed(1),
+                percentileNinety: percentileNinety.toFixed(1)
+            };
+        },
+        calculateTimeInRange: (data) => {
+            const inRange = data.filter(r => r.systolic < 140 && r.diastolic < 90);
+            return (inRange.length / data.length) * 100;
+        },
+        calculateMovingAverage: (data, days) => {
+            const result = [];
+            for (let i = days - 1; i < data.length; i++) {
+                const slice = data.slice(i - days + 1, i + 1);
+                const avg = ss.mean(slice.map(r => r.systolic));
+                result.push({ date: data[i].timestamp, value: avg });
+            }
+            return result;
+        },
+        calculateMorningEveningDiff: (data) => {
+            const morning = data.filter(r => new Date(r.timestamp).getHours() < 12);
+            const evening = data.filter(r => new Date(r.timestamp).getHours() >= 12);
+            const morningAvg = ss.mean(morning.map(r => r.systolic));
+            const eveningAvg = ss.mean(evening.map(r => r.systolic));
+            return eveningAvg - morningAvg;
+        },
+        formatDate: (date) => {
+            return dateFns.format(new Date(date), 'MMM dd, yyyy HH:mm');
+        },
+    };
+
+    // Chart Functions
+    const chartFunctions = {
+        createTrendChart: () => {
+            const options = {
+                series: [{
+                    name: 'Systolic',
+                    data: state.readings.map(r => ({ x: new Date(r.timestamp), y: r.systolic }))
+                }, {
+                    name: 'Diastolic',
+                    data: state.readings.map(r => ({ x: new Date(r.timestamp), y: r.diastolic }))
+                }],
+                chart: {
+                    type: 'line',
+                    height: 350
+                },
+                xaxis: {
+                    type: 'datetime'
+                },
+                yaxis: {
+                    title: {
+                        text: 'Blood Pressure (mmHg)'
+                    }
+                },
+                title: {
+                    text: 'Blood Pressure Trend'
+                }
+            };
+            state.charts.trend = new ApexCharts(document.getElementById('trendChart'), options);
+            state.charts.trend.render();
+        },
+        createDistributionChart: () => {
+            const systolic = state.readings.map(r => r.systolic);
+            const diastolic = state.readings.map(r => r.diastolic);
+            const options = {
+                series: [{
+                    name: 'Systolic',
+                    data: [
+                        {
+                            x: 'Systolic',
+                            y: [
+                                Math.min(...systolic),
+                                ss.quantile(systolic, 0.25),
+                                ss.median(systolic),
+                                ss.quantile(systolic, 0.75),
+                                Math.max(...systolic)
+                            ]
+                        }
+                    ]
+                }, {
+                    name: 'Diastolic',
+                    data: [
+                        {
+                            x: 'Diastolic',
+                            y: [
+                                Math.min(...diastolic),
+                                ss.quantile(diastolic, 0.25),
+                                ss.median(diastolic),
+                                ss.quantile(diastolic, 0.75),
+                                Math.max(...diastolic)
+                            ]
+                        }
+                    ]
+                }],
+                chart: {
+                    type: 'boxPlot',
+                    height: 350
+                },
+                title: {
+                    text: 'Blood Pressure Distribution'
+                },
+                plotOptions: {
+                    boxPlot: {
+                        colors: {
+                            upper: '#28a745',
+                            lower: '#dc3545'
+                        }
+                    }
+                }
+            };
+            state.charts.distribution = new ApexCharts(document.getElementById('distributionChart'), options);
+            state.charts.distribution.render();
+        },
+        createMovingAverageChart: () => {
+            const movingAvg7 = utils.calculateMovingAverage(state.readings, 7);
+            const movingAvg14 = utils.calculateMovingAverage(state.readings, 14);
+            const options = {
+                series: [{
+                    name: '7-day MA',
+                    data: movingAvg7.map(point => ({ x: new Date(point.date), y: point.value }))
+                }, {
+                    name: '14-day MA',
+                    data: movingAvg14.map(point => ({ x: new Date(point.date), y: point.value }))
+                }],
+                chart: {
+                    type: 'line',
+                    height: 350
+                },
+                xaxis: {
+                    type: 'datetime'
+                },
+                yaxis: {
+                    title: {
+                        text: 'Systolic Blood Pressure (mmHg)'
+                    }
+                },
+                title: {
+                    text: 'Moving Average of Systolic Blood Pressure'
+                }
+            };
+            state.charts.movingAverage = new ApexCharts(document.getElementById('movingAverageChart'), options);
+            state.charts.movingAverage.render();
+        },
+        createMorningEveningDiffChart: () => {
+            const diffByDate = state.readings.reduce((acc, reading) => {
+                const date = dateFns.format(new Date(reading.timestamp), 'yyyy-MM-dd');
+                if (!acc[date]) {
+                    acc[date] = { morning: [], evening: [] };
+                }
+                if (new Date(reading.timestamp).getHours() < 12) {
+                    acc[date].morning.push(reading.systolic);
+                } else {
+                    acc[date].evening.push(reading.systolic);
+                }
+                return acc;
+            }, {});
+
+            const differences = Object.entries(diffByDate).map(([date, values]) => {
+                const morningAvg = values.morning.length > 0 ? ss.mean(values.morning) : null;
+                const eveningAvg = values.evening.length > 0 ? ss.mean(values.evening) : null;
+                return {
+                    date: new Date(date),
+                    difference: morningAvg && eveningAvg ? eveningAvg - morningAvg : null
+                };
+            }).filter(item => item.difference !== null);
+
+            const options = {
+                series: [{
+                    name: 'Evening - Morning Difference',
+                    data: differences.map(diff => ({ x: diff.date, y: diff.difference }))
+                }],
+                chart: {
+                    type: 'bar',
+                    height: 350
+                },
+                xaxis: {
+                    type: 'datetime'
+                },
+                yaxis: {
+                    title: {
+                        text: 'Difference in Systolic BP (mmHg)'
+                    }
+                },
+                title: {
+                    text: 'Morning-Evening Systolic Blood Pressure Difference'
+                }
+            };
+            state.charts.morningEveningDiff = new ApexCharts(document.getElementById('morningEveningDiffChart'), options);
+            state.charts.morningEveningDiff.render();
+        },
+        updateCharts: () => {
+            chartFunctions.createTrendChart();
+            chartFunctions.createDistributionChart();
+            chartFunctions.createMovingAverageChart();
+            chartFunctions.createMorningEveningDiffChart();
+        }
+    };
+
+    // UI Components
+    const components = {
+        inputForm: () => `
+            <form id="bpForm" class="space-y-4">
+                <input type="number" id="systolic" placeholder="Systolic" required class="w-full p-2 border rounded">
+                <input type="number" id="diastolic" placeholder="Diastolic" required class="w-full p-2 border rounded">
+                <input type="number" id="pulse" placeholder="Pulse" required class="w-full p-2 border rounded">
+                <input type="datetime-local" id="timestamp" required class="w-full p-2 border rounded">
+                <button type="submit" class="w-full p-2 bg-blue-500 text-white rounded">Add Reading</button>
+            </form>
+            <button id="setMedicationStartDate" class="mt-4 p-2 bg-green-500 text-white rounded">Set Medication Start Date</button>
+        `,
+        statsDisplay: (stats) => `
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                ${Object.entries(stats).map(([key, value]) => `
+                    <div class="bg-white dark:bg-gray-800 p-4 rounded shadow">
+                        <h3 class="font-bold">${key}</h3>
+                        <p class="text-2xl">${value}</p>
+                    </div>
+                `).join('')}
+            </div>
+        `,
+        readingsList: (readings) => `
+            <h2 class="text-2xl font-bold mb-4">Recent Readings</h2>
+            <ul class="space-y-2">
+                ${readings.map(reading => `
+                    <li class="flex justify-between items-center bg-white dark:bg-gray-800 p-4 rounded shadow">
+                        <span>${utils.formatDate(reading.timestamp)} - ${reading.systolic}/${reading.diastolic} mmHg, Pulse: ${reading.pulse}</span>
+                        <button class="deleteReading text-red-500" data-id="${reading.id}">Delete</button>
+                    </li>
+                `).join('')}
+            </ul>
+        `,
+    };
+
+    // Event Handlers
+    const eventHandlers = {
+        handleAddReading: (e) => {
+            e.preventDefault();
+            const newReading = {
+                id: Date.now().toString(),
+                systolic: parseInt(document.getElementById('systolic').value),
+                diastolic: parseInt(document.getElementById('diastolic').value),
+                pulse: parseInt(document.getElementById('pulse').value),
+                timestamp: new Date(document.getElementById('timestamp').value).toISOString()
+            };
+            state.readings.push(newReading);
+            utils.saveToLocalStorage();
+            renderApp();
+        },
+        handleDeleteReading: (e) => {
+            if (e.target.classList.contains('deleteReading')) {
+                const id = e.target.dataset.id;
+                state.readings = state.readings.filter(r => r.id !== id);
+                utils.saveToLocalStorage();
+                renderApp();
+            }
+        },
+        handleSetMedicationStartDate: () => {
+            const date = prompt("Enter the medication start date (YYYY-MM-DD):");
+            if (date) {
+                state.medicationStartDate = date;
+                utils.saveToLocalStorage();
+                renderApp();
+            }
+        }
+    };
+
+  // Render Function (continued)
+    const renderApp = () => {
+        document.getElementById('inputForm').innerHTML = components.inputForm();
+        document.getElementById('statsDisplay').innerHTML = components.statsDisplay(utils.calculateStats(state.readings));
+        document.getElementById('readingsList').innerHTML = components.readingsList(state.readings.slice(0, 30));
+
+        document.getElementById('bpForm').addEventListener('submit', eventHandlers.handleAddReading);
+        document.getElementById('readingsList').addEventListener('click', eventHandlers.handleDeleteReading);
+        document.getElementById('setMedicationStartDate').addEventListener('click', eventHandlers.handleSetMedicationStartDate);
+
+        chartFunctions.updateCharts();
+
+        // Display additional statistics
+        displayAdditionalStats();
+    };
+
+    // Additional Statistics Functions
+    const additionalStats = {
+        calculateWeeklyAverages: () => {
+            const weeklyData = state.readings.reduce((acc, reading) => {
+                const weekStart = dateFns.startOfWeek(new Date(reading.timestamp));
+                const key = dateFns.format(weekStart, 'yyyy-MM-dd');
+                if (!acc[key]) {
+                    acc[key] = { systolic: [], diastolic: [] };
+                }
+                acc[key].systolic.push(reading.systolic);
+                acc[key].diastolic.push(reading.diastolic);
+                return acc;
+            }, {});
+
+            return Object.entries(weeklyData).map(([week, data]) => ({
+                week,
+                systolicAvg: ss.mean(data.systolic),
+                diastolicAvg: ss.mean(data.diastolic)
+            }));
+        },
+
+        calculateMonthlyAverages: () => {
+            const monthlyData = state.readings.reduce((acc, reading) => {
+                const monthStart = dateFns.startOfMonth(new Date(reading.timestamp));
+                const key = dateFns.format(monthStart, 'yyyy-MM');
+                if (!acc[key]) {
+                    acc[key] = { systolic: [], diastolic: [] };
+                }
+                acc[key].systolic.push(reading.systolic);
+                acc[key].diastolic.push(reading.diastolic);
+                return acc;
+            }, {});
+
+            return Object.entries(monthlyData).map(([month, data]) => ({
+                month,
+                systolicAvg: ss.mean(data.systolic),
+                diastolicAvg: ss.mean(data.diastolic)
+            }));
+        },
+
+        calculateLinearRegression: () => {
+            const data = state.readings.map(r => [new Date(r.timestamp).getTime(), r.systolic]);
+            return ss.linearRegression(data);
+        },
+
+        calculatePercentageInRange: () => {
+            const inRange = state.readings.filter(r => r.systolic < 140 && r.diastolic < 90);
+            return (inRange.length / state.readings.length) * 100;
+        },
+
+        calculateBloodPressureLoad: () => {
+            const exceeding = state.readings.filter(r => r.systolic >= 140 || r.diastolic >= 90);
+            return (exceeding.length / state.readings.length) * 100;
+        },
+
+        calculateEffectSize: () => {
+            if (!state.medicationStartDate) return null;
+
+            const before = state.readings.filter(r => new Date(r.timestamp) < new Date(state.medicationStartDate));
+            const after = state.readings.filter(r => new Date(r.timestamp) >= new Date(state.medicationStartDate));
+
+            if (before.length === 0 || after.length === 0) return null;
+
+            const beforeMean = ss.mean(before.map(r => r.systolic));
+            const afterMean = ss.mean(after.map(r => r.systolic));
+            const pooledSD = Math.sqrt((ss.variance(before.map(r => r.systolic)) + ss.variance(after.map(r => r.systolic))) / 2);
+
+            return (afterMean - beforeMean) / pooledSD;
+        }
+    };
+
+    const displayAdditionalStats = () => {
+        const additionalStatsContainer = document.createElement('div');
+        additionalStatsContainer.className = 'mt-8 bg-white dark:bg-gray-800 p-4 rounded shadow';
+        additionalStatsContainer.innerHTML = `
+            <h2 class="text-2xl font-bold mb-4">Additional Statistics</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <h3 class="font-bold">Percentage in Target Range</h3>
+                    <p>${additionalStats.calculatePercentageInRange().toFixed(1)}%</p>
+                </div>
+                <div>
+                    <h3 class="font-bold">Blood Pressure Load</h3>
+                    <p>${additionalStats.calculateBloodPressureLoad().toFixed(1)}%</p>
+                </div>
+                <div>
+                    <h3 class="font-bold">Effect Size (Cohen's d)</h3>
+                    <p>${additionalStats.calculateEffectSize()?.toFixed(2) || 'N/A'}</p>
+                </div>
+            </div>
+        `;
+
+        const weeklyAverages = additionalStats.calculateWeeklyAverages();
+        const monthlyAverages = additionalStats.calculateMonthlyAverages();
+        const regression = additionalStats.calculateLinearRegression();
+
+        // Create charts for weekly and monthly averages
+        createAveragesChart(weeklyAverages, 'weeklyAveragesChart', 'Weekly Averages');
+        createAveragesChart(monthlyAverages, 'monthlyAveragesChart', 'Monthly Averages');
+
+        // Create regression chart
+        createRegressionChart(regression);
+
+        document.getElementById('statsDisplay').appendChild(additionalStatsContainer);
+    };
+
+    const createAveragesChart = (data, elementId, title) => {
+        const chartContainer = document.createElement('div');
+        chartContainer.id = elementId;
+        chartContainer.className = 'mt-8 bg-white dark:bg-gray-800 p-4 rounded shadow';
+        document.getElementById('charts').appendChild(chartContainer);
+
+        const options = {
+            series: [{
+                name: 'Systolic',
+                data: data.map(d => ({ x: d.week || d.month, y: d.systolicAvg }))
+            }, {
+                name: 'Diastolic',
+                data: data.map(d => ({ x: d.week || d.month, y: d.diastolicAvg }))
+            }],
+            chart: {
+                type: 'line',
+                height: 350
+            },
+            xaxis: {
+                type: 'category'
+            },
+            yaxis: {
+                title: {
+                    text: 'Blood Pressure (mmHg)'
+                }
+            },
+            title: {
+                text: title
+            }
+        };
+
+        new ApexCharts(document.getElementById(elementId), options).render();
+    };
+
+    const createRegressionChart = (regression) => {
+        const chartContainer = document.createElement('div');
+        chartContainer.id = 'regressionChart';
+        chartContainer.className = 'mt-8 bg-white dark:bg-gray-800 p-4 rounded shadow';
+        document.getElementById('charts').appendChild(chartContainer);
+
+        const firstDate = new Date(state.readings[0].timestamp);
+        const lastDate = new Date(state.readings[state.readings.length - 1].timestamp);
+
+        const regressionLine = [
+            { x: firstDate, y: regression.m * firstDate.getTime() + regression.b },
+            { x: lastDate, y: regression.m * lastDate.getTime() + regression.b }
+        ];
+
+        const options = {
+            series: [{
+                name: 'Systolic',
+                type: 'scatter',
+                data: state.readings.map(r => ({ x: new Date(r.timestamp), y: r.systolic }))
+            }, {
+                name: 'Regression Line',
+                type: 'line',
+                data: regressionLine
+            }],
+            chart: {
+                height: 350,
+                type: 'line',
+            },
+            xaxis: {
+                type: 'datetime'
+            },
+            yaxis: {
+                title: {
+                    text: 'Systolic Blood Pressure (mmHg)'
+                }
+            },
+            title: {
+                text: 'Blood Pressure Trend with Regression Line'
+            }
+        };
+
+        new ApexCharts(document.getElementById('regressionChart'), options).render();
+    };
+
+    // Initialize App
+    const initApp = () => {
+        utils.loadFromLocalStorage();
+        renderApp();
+    };
+
+    // Start the app
+    initApp();
+    </script>
+</body>
+</html>
